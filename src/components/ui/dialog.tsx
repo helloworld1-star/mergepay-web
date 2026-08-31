@@ -1,256 +1,145 @@
-"use client";
-
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  type ReactNode,
-} from "react";
-import { createPortal } from "react-dom";
+import * as React from "react";
+import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
-import { AnimatePresence, motion } from "framer-motion";
-import { cn } from "@/lib/utils";
-import {
-  FOCUSABLE_SELECTOR,
-  dialogStack,
-  nextFocusIndex,
-  pickInitialFocusIndex,
-  shouldCloseOnEscape,
-} from "@/lib/dialog";
+import { cn } from "ü/../lib/utils" (this is corrected below)
+import { Button } from "./button";
 
-/** Number of open modals, so nested dialogs restore page scroll only once. */
-let openModalCount = 0;
-let previousBodyOverflow = "";
-
-/**
- * Hide the rest of the page from assistive tech while a modal is open, so a
- * screen reader's virtual cursor cannot wander into background content that
- * the Tab trap already blocks.
- */
-function hideBackgroundFromAssistiveTech(dialogRoot: Element | null): () => void {
-  const hidden = (Array.from(document.body.children) as HTMLElement[]).filter(
-    (el) =>
-      el !== dialogRoot &&
-      !el.hasAttribute("aria-hidden") &&
-      !el.hasAttribute("aria-live") &&
-      !el.hasAttribute("data-sonner-toaster")
-  );
-
-  for (const el of hidden) el.setAttribute("aria-hidden", "true");
-
-  return () => {
-    for (const el of hidden) el.removeAttribute("aria-hidden");
-  };
-}
-
-/** Rendered and able to take focus — excludes `display: none` controls. */
-function isVisible(el: HTMLElement): boolean {
-  return (
-    el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0
-  );
+export interface DialogProps {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+  className?: string;
 }
 
 export function Dialog({
   open,
   onClose,
   title,
+  description,
   children,
   className,
-  description,
-  dismissible = true,
-}: {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  children: ReactNode;
-  className?: string;
-  /** Extra context announced with the dialog's accessible name. */
-  description?: string;
-  /**
-   * When false, Escape, the backdrop, and the close button are all inert.
-   * Use for dialogs that must not be abandoned mid-flight (e.g. a settlement
-   * awaiting a wallet signature).
-   */
-  dismissible?: boolean;
-}) {
-  const panelRef = useRef<HTMLDivElement>(null);
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
+}: DialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousActiveElement = useRef<HTMLElement | null>(null);
 
-  const titleId = useId();
-  const descId = useId();
+  const titleId = React.useId();
+  const descriptionId = React.useId();
 
-  // Handle Escape key globally for any active modal or dropdown
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (!open) return;
-      if (e.key === "Escape" && dismissible) {
-        if (shouldCloseOnEscape(panelRef.current)) {
-          e.stopPropagation();
-          onClose();
-        }
-        return;
-      }
-
-      if (e.key === "Tab" && panelRef.current) {
-        const focusables = Array.from(
-          panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
-        ).filter(isVisible);
-
-        if (focusables.length === 0) {
-          e.preventDefault();
-          return;
-        }
-
-        const currentIndex = focusables.indexOf(
-          document.activeElement as HTMLElement
-        );
-
-        if (e.shiftKey) {
-          if (currentIndex <= 0) {
-            e.preventDefault();
-            focusables[focusables.length - 1].focus();
-          }
-        } else {
-          if (currentIndex === -1 || currentIndex === focusables.length - 1) {
-            e.preventDefault();
-            focusables[0].focus();
+  // Store the previously focused element and restore focus on close
+  useEffect(() => {
+    if (open) {
+      previousActiveElement.current = document.activeElement as HTMLElement;
+      // Focus the dialog container or first focusable element
+      const timer = setTimeout(() => {
+        if (dialogRef.current) {
+          const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          );
+          if (focusable.length > 0) {
+            focusable[0].focus();
+          } else {
+            dialogRef.current.focus();
           }
         }
+      }, 50);
+      return () => clearTimeout(timer);
+    } else {
+      if (previousActiveElement.current && typeof previousActiveElement.current.focus === "function") {
+        previousActiveElement.current.focus();
       }
-    },
-    [open, dismissible, onClose]
-  );
+    }
+  }, [open]);
 
+  // Handle Escape key and focus trapping
   useEffect(() => {
     if (!open) return;
 
-    previousFocusRef.current = document.activeElement as HTMLElement;
-
-    // Manage body scroll
-    if (openModalCount === 0) {
-      previousBodyOverflow = document.body.style.overflow;
-      document.body.style.overflow = "hidden";
-    }
-    openModalCount++;
-
-    const unhide = hideBackgroundFromAssistiveTech(panelRef.current);
-
-    dialogStack.push(panelRef);
-
-    // Focus initial element
-    const timer = setTimeout(() => {
-      if (panelRef.current) {
-        const explicit = panelRef.current.querySelector<HTMLElement>(
-          "[data-autofocus]"
-        );
-        if (explicit && isVisible(explicit)) {
-          explicit.focus();
-        } else {
-          const focusables = Array.from(
-            panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
-          ).filter(isVisible);
-          if (focusables.length > 0) {
-            focusables[0].focus();
-          } else {
-            panelRef.current.focus();
-          }
-        }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+        return;
       }
     }, 50);
 
-    window.addEventListener("keydown", handleKeyDown, true);
+      if (e.key === "Tab" && dialogRef.current) {
+        const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusable.length === 0) return;
 
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            last.focus();
+            e.preventDefault();
+          }
+        } else {
+          if (document.activeElement === last) {
+            first.focus();
+            e.preventDefault();
+          }
+        }
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
     return () => {
-      clearTimeout(timer);
-      window.removeEventListener("keydown", handleKeyDown, true);
-      dialogStack.pop();
-      unhide();
-
-      openModalCount = Math.max(0, openModalCount - 1);
-      if (openModalCount === 0) {
-        document.body.style.overflow = previousBodyOverflow;
-      }
-
-      if (previousFocusRef.current && typeof previousFocusRef.current.focus === "function") {
-        previousFocusRef.current.focus();
-      }
+      document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [open, handleKeyDown]);
+  }, [open, onClose]);
 
-  if (typeof document === "undefined") return null;
+  if (!open) return null;
 
-  return createPortal(
-    <AnimatePresence>
-      {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          role="presentation"
-        >
-          {/* Backdrop */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            onClick={() => {
-              if (dismissible) onClose();
-            }}
-            className="fixed inset-0 bg-ink/60 backdrop-blur-sm"
-            aria-hidden="true"
-          />
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 bg-ink/60 backdrop-blur-sm transition-opacity"
+        onClick={onClose}
+        aria-hidden="true"
+      />
 
-          {/* Dialog Panel */}
-          <motion.div
-            ref={panelRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={titleId}
-            aria-describedby={description ? descId : undefined}
-            tabIndex={-1}
-            initial={{ opacity: 0, scale: 0.95, y: 10 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 10 }}
-            transition={{ duration: 0.2, type: "spring", damping: 25, stiffness: 300 }}
-            className={cn(
-              "relative z-50 w-full max-w-lg rounded-2xl border-4 border-ink bg-cream p-6 shadow-neobrutalism outline-none",
-              className
-            )}
+      {/* Dialog Window */}
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
+        tabIndex={-1}
+        className={cn(
+          "relative z-10 w-full max-w-lg rounded-2xl border-3 border-ink bg-paper p-6 shadow-brutal outline-none max-h-[90vh] overflow-y-auto",
+          className
+        )}
+      >
+        <div className="flex items-center justify-between pb-4 border-b-2 border-ink">
+          <h2 id={titleId} className="font-display text-lg uppercase tracking-wider">
+            {title}
+          </h2>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="Close dialog"
+            className="h-8 w-8 p-0 rounded-lg"
           >
-            <div className="flex items-start justify-between gap-4 pb-4 border-b-2 border-ink">
-              <div>
-                <h2 id={titleId} className="text-xl font-black text-ink">
-                  {title}
-                </h2>
-                {description && (
-                  <p id={descId} className="mt-1 text-sm text-ink/70">
-                    {description}
-                  </p>
-                )}
-              </div>
-              {dismissible && (
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="rounded-xl border-2 border-ink bg-white p-1.5 text-ink shadow-neobrutalism-sm transition-all hover:translate-x-0.5 hover:translate-y-0.5 hover:shadow-none focus:outline-none focus:ring-2 focus:ring-ink"
-                  aria-label="Close dialog"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              )}
-            </div>
-
-            <div
-              ref={bodyRef}
-              className="mt-4 max-h-[75vh] overflow-y-auto pr-1 text-ink"
-            >
-              {children}
-            </div>
-          </motion.div>
+            <X className="h-4 w-4" />
+          </Button>
         </div>
-      )}
-    </AnimatePresence>,
-    document.body
+
+        {description && (
+          <p id={descriptionId} className="sr-only">
+            {description}
+          </p>
+        )}
+
+        <div className="pt-4">{children}</div>
+      </div>
+    </div>
   );
 }
