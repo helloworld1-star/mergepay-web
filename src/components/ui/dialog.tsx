@@ -27,9 +27,6 @@ let previousBodyOverflow = "";
  * Hide the rest of the page from assistive tech while a modal is open, so a
  * screen reader's virtual cursor cannot wander into background content that
  * the Tab trap already blocks.
- *
- * Live regions are left alone — toasts raised by the dialog itself still need
- * to be announced.
  */
 function hideBackgroundFromAssistiveTech(dialogRoot: Element | null): () => void {
   const hidden = (Array.from(document.body.children) as HTMLElement[]).filter(
@@ -81,169 +78,177 @@ export function Dialog({
   const bodyRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
-  // Read the latest props from inside the key handler without making the
-  // effect depend on them. Consumers pass inline arrow functions for
-  // `onClose`, so a dependency here would re-run the effect on every render —
-  // and its cleanup would yank focus back to the trigger mid-interaction.
-  const onCloseRef = useRef(onClose);
-  const dismissibleRef = useRef(dismissible);
-  onCloseRef.current = onClose;
-  dismissibleRef.current = dismissible;
+  const titleId = useId();
+  const descId = useId();
 
-  const baseId = useId();
-  const titleId = `${baseId}-title`;
-  const descriptionId = description ? `${baseId}-description` : undefined;
+  // Handle Escape key globally for any active modal or dropdown
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (!open) return;
+      if (e.key === "Escape" && dismissible) {
+        if (shouldCloseOnEscape(panelRef.current)) {
+          e.stopPropagation();
+          onClose();
+        }
+        return;
+      }
 
-  const getFocusable = useCallback(
-    () =>
-      panelRef.current
-        ? Array.from(
-            panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
-          ).filter((el) => el.tabIndex !== -1 && isVisible(el))
-        : [],
-    []
+      if (e.key === "Tab" && panelRef.current) {
+        const focusables = Array.from(
+          panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
+        ).filter(isVisible);
+
+        if (focusables.length === 0) {
+          e.preventDefault();
+          return;
+        }
+
+        const currentIndex = focusables.indexOf(
+          document.activeElement as HTMLElement
+        );
+
+        if (e.shiftKey) {
+          if (currentIndex <= 0) {
+            e.preventDefault();
+            focusables[focusables.length - 1].focus();
+          }
+        } else {
+          if (currentIndex === -1 || currentIndex === focusables.length - 1) {
+            e.preventDefault();
+            focusables[0].focus();
+          }
+        }
+      }
+    },
+    [open, dismissible, onClose]
   );
 
   useEffect(() => {
     if (!open) return;
 
-    const dialogId = baseId;
-    previousFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    previousFocusRef.current = document.activeElement as HTMLElement;
 
-    dialogStack.push(dialogId);
+    // Manage body scroll
     if (openModalCount === 0) {
       previousBodyOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
     }
     openModalCount++;
-    document.body.style.overflow = "hidden";
 
-    function handleKeyDown(e: KeyboardEvent) {
-      if (
-        shouldCloseOnEscape({
-          key: e.key,
-          dismissible: dismissibleRef.current,
-          isTopmost: dialogStack.isTopmost(dialogId),
-        })
-      ) {
-        e.stopPropagation();
-        onCloseRef.current();
-        return;
+    const unhide = hideBackgroundFromAssistiveTech(panelRef.current);
+
+    dialogStack.push(panelRef);
+
+    // Focus initial element
+    const timer = setTimeout(() => {
+      if (panelRef.current) {
+        const explicit = panelRef.current.querySelector<HTMLElement>(
+          "[data-autofocus]"
+        );
+        if (explicit && isVisible(explicit)) {
+          explicit.focus();
+        } else {
+          const focusables = Array.from(
+            panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
+          ).filter(isVisible);
+          if (focusables.length > 0) {
+            focusables[0].focus();
+          } else {
+            panelRef.current.focus();
+          }
+        }
       }
-
-      // Keep Tab inside the topmost dialog so background content never
-      // receives focus while a modal is open.
-      if (e.key !== "Tab" || !dialogStack.isTopmost(dialogId)) return;
-      const focusable = getFocusable();
-      const active = document.activeElement as HTMLElement | null;
-      const target = nextFocusIndex(
-        focusable.length,
-        active ? focusable.indexOf(active) : -1,
-        e.shiftKey
-      );
-      if (target === null) return;
-      e.preventDefault();
-      focusable[target]?.focus();
-    }
+    }, 50);
 
     window.addEventListener("keydown", handleKeyDown, true);
 
-    // Wait for the panel to mount (AnimatePresence renders it in the same
-    // frame the dialog opens) before choosing an initial focus target.
-    const focusFrame = requestAnimationFrame(() => {
-      const focusable = getFocusable();
-      const index = pickInitialFocusIndex(
-        focusable.map((el) => ({
-          autofocus: el.hasAttribute("data-autofocus"),
-          inBody: bodyRef.current?.contains(el) ?? false,
-        }))
-      );
-      if (index >= 0) focusable[index]?.focus();
-      else panelRef.current?.focus();
-    });
-
-    // The overlay is the portal's direct child of <body>; everything beside it
-    // is background content.
-    const restoreBackground = hideBackgroundFromAssistiveTech(
-      panelRef.current?.parentElement ?? null
-    );
-
     return () => {
-      cancelAnimationFrame(focusFrame);
+      clearTimeout(timer);
       window.removeEventListener("keydown", handleKeyDown, true);
-      restoreBackground();
-      dialogStack.remove(dialogId);
+      dialogStack.pop();
+      unhide();
+
       openModalCount = Math.max(0, openModalCount - 1);
-      if (openModalCount === 0) document.body.style.overflow = previousBodyOverflow;
-      // Hand focus back to whatever opened the dialog so keyboard users keep
-      // their place on the page.
-      previousFocusRef.current?.focus();
+      if (openModalCount === 0) {
+        document.body.style.overflow = previousBodyOverflow;
+      }
+
+      if (previousFocusRef.current && typeof previousFocusRef.current.focus === "function") {
+        previousFocusRef.current.focus();
+      }
     };
-  }, [open, baseId, getFocusable]);
+  }, [open, handleKeyDown]);
 
   if (typeof document === "undefined") return null;
 
   return createPortal(
     <AnimatePresence>
       {open && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/60"
-          // Compare against `currentTarget` so a drag that starts inside the
-          // panel and ends on the backdrop does not dismiss the dialog.
-          onMouseDown={
-            dismissible
-              ? (e) => {
-                  if (e.target === e.currentTarget) onClose();
-                }
-              : undefined
-          }
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          role="presentation"
         >
+          {/* Backdrop */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            onClick={() => {
+              if (dismissible) onClose();
+            }}
+            className="fixed inset-0 bg-ink/60 backdrop-blur-sm"
+            aria-hidden="true"
+          />
+
+          {/* Dialog Panel */}
           <motion.div
             ref={panelRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}
-            aria-describedby={descriptionId}
+            aria-describedby={description ? descId : undefined}
             tabIndex={-1}
-            initial={{ scale: 0.92, y: 16, opacity: 0 }}
-            animate={{ scale: 1, y: 0, opacity: 1 }}
-            exit={{ scale: 0.95, y: 8, opacity: 0 }}
-            transition={{ type: "spring", stiffness: 400, damping: 28 }}
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            transition={{ duration: 0.2, type: "spring", damping: 25, stiffness: 300 }}
             className={cn(
-              "w-full max-w-lg max-h-[90vh] overflow-y-auto bg-cream border-3 border-ink rounded-2xl shadow-brutal-xl focus:outline-none",
+              "relative z-50 w-full max-w-lg rounded-2xl border-4 border-ink bg-cream p-6 shadow-neobrutalism outline-none",
               className
             )}
           >
-            <div className="flex items-center justify-between border-b-3 border-ink bg-butter px-5 py-3 rounded-t-[13px] sticky top-0 z-10">
-              <h2
-                id={titleId}
-                className="font-display text-base uppercase tracking-tight"
-              >
-                {title}
-              </h2>
-              <button
-                type="button"
-                onClick={onClose}
-                disabled={!dismissible}
-                aria-label={`Close ${title}`}
-                className="border-2 border-ink rounded-lg bg-cream p-1 shadow-brutal-sm hover:bg-flamingo transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-cream focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-grape/40"
-              >
-                <X className="h-4 w-4" />
-              </button>
+            <div className="flex items-start justify-between gap-4 pb-4 border-b-2 border-ink">
+              <div>
+                <h2 id={titleId} className="text-xl font-black text-ink">
+                  {title}
+                </h2>
+                {description && (
+                  <p id={descId} className="mt-1 text-sm text-ink/70">
+                    {description}
+                  </p>
+                )}
+              </div>
+              {dismissible && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-xl border-2 border-ink bg-white p-1.5 text-ink shadow-neobrutalism-sm transition-all hover:translate-x-0.5 hover:translate-y-0.5 hover:shadow-none focus:outline-none focus:ring-2 focus:ring-ink"
+                  aria-label="Close dialog"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              )}
             </div>
-            {description && (
-              <p id={descriptionId} className="sr-only">
-                {description}
-              </p>
-            )}
-            <div ref={bodyRef} className="p-5">
+
+            <div
+              ref={bodyRef}
+              className="mt-4 max-h-[75vh] overflow-y-auto pr-1 text-ink"
+            >
               {children}
             </div>
           </motion.div>
-        </motion.div>
+        </div>
       )}
     </AnimatePresence>,
     document.body
